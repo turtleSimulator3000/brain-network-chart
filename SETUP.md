@@ -34,7 +34,7 @@ which ollama && ollama --version && curl -s http://localhost:11434/api/tags
 ## Step 1 — Install everything
 
 ```bash
-cd /home/ritac/jeffrey/brain-network-chart
+cd brain-network-chart
 bash install.sh
 ```
 
