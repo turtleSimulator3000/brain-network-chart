@@ -21,11 +21,20 @@ Automate conversion of DICOM MRI files to BIDS (Brain Imaging Data Structure) fo
 
 ## Execution
 
-Run the script with optional input and output directories:
+All conversion scripts (`dicom2bids_agent.py`, `bids_local_agent.py`, `tools.py`, and helpers) are consolidated into a **single installable package**. Install once, then invoke via the package entry point:
 
 ```bash
+# Install the package (from repo root)
+pip install -e .
+
+# Run conversion
+python -m dicom2bids [data_dir] [output_dir]
+
+# Or via the legacy script entry point (still supported)
 python3 dicom2bids_agent.py [data_dir] [output_dir]
 ```
+
+> **Note**: Do not run individual helper scripts directly. They are internal modules and are not intended to be executed standalone.
 
 ### Parameters
 
@@ -71,7 +80,17 @@ The script connects to Ollama servers at:
 - `localhost:11434` (default local)
 - `yukon.acm.unc.edu:11434` (fallback)
 
-Ensure Ollama is running with the qwen3 model available. The script uses:
+### Model Availability Check
+
+At startup, before any DICOM files are read, the skill performs a **model availability check** against every configured Ollama endpoint:
+
+1. Sends a `GET /api/tags` request to each host.
+2. Confirms the configured model (default: `qwen3:latest`) is present in the response.
+3. If the model is not found on **any** host, the process exits immediately with a clear error message listing which hosts were tried and which models were available.
+
+This prevents silent fallback to regex-only classification for an entire dataset without the operator being aware. If you intend to run regex-only mode deliberately, set `DICOM2BIDS_MODEL=none`.
+
+The script uses:
 - Zero temperature (deterministic classification)
 - ~250 token max output per classification
 - 30-second timeout per Ollama call
@@ -112,6 +131,22 @@ sub-001/
 └── 2024-03-20/
 ```
 
+### Single Intermediate Directory (Transparent Unwrapping)
+
+Some datasets wrap all subject directories inside a single named subdirectory:
+
+```
+data_dir/
+└── CONTE_NeoNate_DICOMS/       ← single intermediate directory
+    ├── sub-001/
+    ├── sub-002/
+    └── sub-103/
+```
+
+The layout heuristic now detects this pattern: if `data_dir` contains **exactly one subdirectory** and that directory does not itself look like a subject folder (i.e., it contains multiple child directories that follow a subject naming pattern), the script transparently descends into it and treats it as the effective root. Without this fix, all 103 subjects would be collapsed into a single participant.
+
+> **Rule**: A directory is treated as a transparent wrapper if it has exactly one child directory and that child has two or more subdirectories whose names do not match recognized modality names (`T1W`, `DTI`, `fMRI`, etc.).
+
 ## Output Structure
 
 BIDS-organized directory:
@@ -142,6 +177,8 @@ High-confidence patterns that bypass LLM:
 - **perf/asl**: Arterial spin labeling sequences
 - **anat/FLAIR**: FLAIR sequences
 - **func/bold rest**: Resting-state fMRI
+- **func/bold connectivity**: Series whose `SeriesDescription` matches `(?i)(connect|conn_|rs[_-]?fmri|functional.connect)` are classified as `func/bold` (task label `rest`). Without this rule, these series were incorrectly falling through to LLM classification and being labelled `anat/T1w` due to short TR values.
+- **anat/PD or anat/T2w (dual-echo)**: In dual-echo anatomical acquisitions, echo number disambiguates the contrast. Echo 1 (`EchoNumber == 1`) is classified as `anat/PD`; echo 2 (`EchoNumber == 2`) is classified as `anat/T2w`. The trigger pattern is `(?i)(dual.echo|pd[_-]?t2|t2[_-]?pd)` on `SeriesDescription`. Without this rule, both echoes were mapped to the same suffix, producing duplicate file conflicts.
 
 ### LLM Classification
 For ambiguous sequences, the LLM receives:

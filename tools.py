@@ -74,7 +74,8 @@ def composite_roi_images(roi_ids: List[str]) -> bytes:
     return buf.read()
 
 # Upload configuration
-UPLOAD_DIR = '/ram/USERS/tao/code/gift/BrainChart-FC-Lifespan/brain_network_app/brain-network-chart/uploaded_files'
+_DEFAULT_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploaded_files')
+UPLOAD_DIR = os.environ.get('UPLOAD_DIR', _DEFAULT_UPLOAD_DIR)
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [UPLOAD] Created upload directory: {UPLOAD_DIR}")

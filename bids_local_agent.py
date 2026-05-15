@@ -30,7 +30,10 @@ from datetime import datetime
 LOCAL_AGENT_HOST = "0.0.0.0"
 LOCAL_AGENT_PORT = 7789
 AGENT_VERSION = "1.0"
-PIPELINE_DIR = "/ram/USERS/tao/code/new/bids"
+PIPELINE_DIR = os.environ.get(
+    'BIDS_PIPELINE_DIR',
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bids_output')
+)
 JOB_TTL = 600  # seconds before a finished job is cleaned up
 
 # Global job registry. Written by worker threads, read by stream handlers.
