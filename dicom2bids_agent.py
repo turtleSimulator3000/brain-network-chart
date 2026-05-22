@@ -76,6 +76,7 @@ RULES = [
     (r'(?i)(swi|susceptib)',                                           'anat',  'T2starw'),
     (r'(?i)(mprage|mp.rage|ir.fspgr|bravo)',                           'anat',  'T1w'),
     (r'(?i)flair',                                                     'anat',  'FLAIR'),  # before T2
+    (r'(?i)PD',                                                        'anat',  'PDw'),   # before T2
     (r'(?i)(t2.fse|fse|t2.tse)',                                       'anat',  'T2w'),
     (r'(?i)(t2.ge|ge.t2|t2.gre|t2\*)',                                'anat',  'T2starw'),
     (r'(?i)t2',                                                        'anat',  'T2w'),
@@ -373,6 +374,35 @@ async def classify_all(
         results = await asyncio.gather(*tasks)
     return {desc: res for (desc, _), res in zip(unique_series, results)}
 
+async def check_model_availability() -> str | None:
+    """
+    Check that MODEL_NAME is available on at least one Ollama host.
+    Returns the first reachable host string, or None if unavailable.
+    Prints a warning to stderr if the model is not found on any host.
+    """
+    async with httpx.AsyncClient(timeout=10) as http:
+        for host in OLLAMA_HOSTS:
+            try:
+                resp = await http.get(f"http://{host}/api/tags", timeout=5)
+                resp.raise_for_status()
+                models = [m["name"] for m in resp.json().get("models", [])]
+                if any(m == MODEL_NAME or m.startswith(MODEL_NAME.split(":")[0] + ":") for m in models):
+                    return host
+                print(
+                    f"  ! {host}: reachable but model {MODEL_NAME!r} not found "
+                    f"(available: {', '.join(models) or 'none'})",
+                    file=sys.stderr,
+                )
+            except Exception as e:
+                print(f"  ! {host}: {e}", file=sys.stderr)
+    print(
+        f"\n[WARNING] No Ollama host has model {MODEL_NAME!r}. "
+        "Classification will fall back to regex rules.\n",
+        file=sys.stderr,
+    )
+    return None
+
+
 # ─── 数据集布局发现（统一 Agent） ─────────────────────────────────────────────
 
 _DATE_RE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})')
@@ -484,6 +514,14 @@ def _heuristic_layout(data_dir: Path) -> dict:
         return {"modality_grouped": False, "has_sessions": False,
                 "subject_glob": "*", "session_glob": "", "session_label_from": "dirname",
                 "dicom_glob": "", "dicom_type": "dcm_dir", "notes": "heuristic fallback"}
+    # If there is exactly one top-level directory, it may be an intermediate wrapper;
+    # recurse into it to find the real dataset root, then adjust globs so they
+    # remain relative to the original data_dir.
+    if len(top_dirs) == 1:
+        inner = _heuristic_layout(top_dirs[0])
+        prefix = top_dirs[0].name
+        inner["subject_glob"] = f"{prefix}/{inner['subject_glob']}"
+        return inner
 
     # Detect modality_grouped: majority of top dirs match imaging-type keywords
     n_modality = sum(
@@ -1427,6 +1465,14 @@ async def main():
     print("=" * 60)
     print("DICOM → BIDS Auto Conversion (LLM Agent Classification)")
     print("=" * 60)
+
+    # 0. Check model availability
+    print("\n[0/7] Checking LLM model availability ...")
+    active_host = await check_model_availability()
+    if active_host:
+        print(f"  Model {MODEL_NAME!r} confirmed on {active_host}")
+    else:
+        print(f"  Model unavailable — will use regex fallback for all series")
 
     # 1. Check tools
     print("\n[1/7] Checking tools ...")
