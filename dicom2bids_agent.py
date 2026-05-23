@@ -309,7 +309,7 @@ async def call_classify_agent(http: httpx.AsyncClient, host: str,
         "think": False,
         "options": {"temperature": 0, "num_predict": 250},
     }
-    resp = await http.post(f"http://{host}/api/chat", json=payload, timeout=30)
+    resp = await http.post(f"http://{host}/api/chat", json=payload, timeout=300)
     resp.raise_for_status()
     raw = resp.json()["message"]["content"].strip()
     candidate = _extract_json(raw)
@@ -363,13 +363,13 @@ async def classify_all(
     并发分类所有唯一序列，返回 {description: agent_result} 缓存字典。
     限制并发数以避免 Ollama 服务器过载导致输出质量下降。
     """
-    sem = asyncio.Semaphore(8)
+    sem = asyncio.Semaphore(2)
 
     async def _bounded(desc: str, meta: dict) -> dict:
         async with sem:
             return await _try_hosts(http, desc, meta)
 
-    async with httpx.AsyncClient(timeout=60) as http:
+    async with httpx.AsyncClient(timeout=300) as http:
         tasks = [_bounded(desc, meta) for desc, meta in unique_series]
         results = await asyncio.gather(*tasks)
     return {desc: res for (desc, _), res in zip(unique_series, results)}
@@ -521,6 +521,10 @@ def _heuristic_layout(data_dir: Path) -> dict:
         inner = _heuristic_layout(top_dirs[0])
         prefix = top_dirs[0].name
         inner["subject_glob"] = f"{prefix}/{inner['subject_glob']}"
+        if inner.get("session_glob"):
+            inner["session_glob"] = f"{prefix}/{inner['session_glob']}"
+        if inner.get("dicom_glob"):
+            inner["dicom_glob"] = f"{prefix}/{inner['dicom_glob']}"
         return inner
 
     # Detect modality_grouped: majority of top dirs match imaging-type keywords
@@ -578,7 +582,7 @@ async def discover_dataset_layout(data_dir: Path, http: httpx.AsyncClient) -> di
         }
         for host in OLLAMA_HOSTS:
             try:
-                resp = await http.post(f"http://{host}/api/chat", json=payload, timeout=60)
+                resp = await http.post(f"http://{host}/api/chat", json=payload, timeout=300)
                 resp.raise_for_status()
                 raw  = resp.json()["message"]["content"].strip()
                 cand = _extract_json(raw)
@@ -696,7 +700,21 @@ def get_dicom_sources(base_dir: Path, dicom_glob: str) -> list[Path]:
                 if alt:
                     sources = alt
                     break
-    return [s for s in sources if s.exists()] or [base_dir]
+    # dcm2bids accepts directories and archives — never individual .dcm files.
+    # If the glob expanded to DICOM files, collapse to their unique parent directories.
+    result: list[Path] = []
+    seen_dirs: set[Path] = set()
+    for s in sources:
+        if not s.exists():
+            continue
+        if s.is_file() and s.suffix.lower() == '.dcm':
+            p = s.parent
+            if p not in seen_dirs:
+                seen_dirs.add(p)
+                result.append(p)
+        else:
+            result.append(s)
+    return result or [base_dir]
 
 
 def get_sessions(subject_roots: list[Path], layout: dict) -> dict[str, list[Path]]:
